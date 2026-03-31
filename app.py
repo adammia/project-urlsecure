@@ -30,9 +30,9 @@ WEBRISK_ENDPOINT = "https://webrisk.googleapis.com/v1/uris:search"
 DEFAULT_THREAT_TYPES = ["SOCIAL_ENGINEERING", "MALWARE", "UNWANTED_SOFTWARE"]
 
 BYPASS_WHITELIST_FOR_TEST = False
-WEBRISK_TEST_MODE = True
+WEBRISK_TEST_MODE = False
 WEBRISK_POSITIVE_TEST_URLS = {"https://webrisk-test.local", "http://webrisk-test.local"}
-SHOW_DEBUG_JSON = True
+SHOW_DEBUG_JSON = False
 
 SHARED_HOSTING_SUFFIXES = {
     "appspot.com", "github.io", "pages.dev", "vercel.app", "netlify.app",
