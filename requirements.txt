@@ -2,9 +2,10 @@ pandas
 numpy
 scikit-learn
 xgboost
-streamlit
 python-dotenv
 tldextract
 pybloom-live
 joblib
 requests
+streamlit==1.19.0
+altair==4.2.2
