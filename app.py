@@ -583,7 +583,7 @@ if run:
         result = evaluate_url(url, bloom)
         st.session_state["last_state_icon"] = result["state_icon"]
         st.session_state["last_result"] = result
-        st.rerun()
+        st.experimental_rerun()
 
 result = st.session_state.get("last_result")
 if result:
