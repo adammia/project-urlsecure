@@ -4,6 +4,7 @@ import json
 import os
 import re
 from html import escape
+from textwrap import dedent
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -29,7 +30,7 @@ WEBRISK_ENDPOINT = "https://webrisk.googleapis.com/v1/uris:search"
 DEFAULT_THREAT_TYPES = ["SOCIAL_ENGINEERING", "MALWARE", "UNWANTED_SOFTWARE"]
 
 BYPASS_WHITELIST_FOR_TEST = False
-WEBRISK_TEST_MODE = False
+WEBRISK_TEST_MODE = True
 WEBRISK_POSITIVE_TEST_URLS = {"https://webrisk-test.local", "http://webrisk-test.local"}
 SHOW_DEBUG_JSON = True
 
@@ -744,21 +745,12 @@ if result:
     if result["final_severity"] == "green":
         open_button_html = ""
         if result.get("allow_open"):
-            open_button_html = f"""
-            <div style="margin-top:16px;">
-              <a href="{safe_url}" target="_blank" rel="noopener noreferrer" style="
-                  display:inline-block;
-                  padding:.78rem 1.1rem;
-                  background:#e11d8d;
-                  color:white;
-                  text-decoration:none;
-                  border-radius:999px;
-                  font-weight:700;
-              ">Oldal megnyitása új lapon</a>
-            </div>
-            """
-        st.markdown(
-            f"""
+            open_button_html = dedent(f"""
+                <div style="margin-top:16px;">
+                  <a href="{safe_url}" target="_blank" rel="noopener noreferrer" style="display:inline-block; padding:.78rem 1.1rem; background:#e11d8d; color:white; text-decoration:none; border-radius:999px; font-weight:700;">Oldal megnyitása új lapon</a>
+                </div>
+            """).strip()
+        safe_html = dedent(f"""
             <div class="frame">
               <div class="safe-page">
                 <div class="safe-badge">Biztonságos oldal</div>
@@ -777,9 +769,8 @@ if result:
                 </div>
               </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        """).strip()
+        st.markdown(safe_html, unsafe_allow_html=True)
     else:
         warning_class = "warning-review" if result["final_severity"] == "yellow" else "warning-block"
         accent = "#a16207" if result["final_severity"] == "yellow" else "#be185d"
@@ -787,28 +778,24 @@ if result:
         if result["final_signal"] == "PASS_TO_STAGE2":
             stage2_hint = '<div style="margin-top:14px; color:#475569; font-size:.94rem;">A Stage–2 szövegbányászati mélyelemzés indítása javasolt.</div>'
 
-        st.markdown(
-            f"""
+        warning_html = dedent(f"""
             <div class="frame">
               <div class="warning-page {warning_class}">
                 <div class="warning-card">
                   <div style="font-size:1.8rem; line-height:1;">{escape(str(result["state_icon"]))}</div>
                   <h2 style="margin:10px 0 6px 0; color:{accent}; font-size:1.12rem;">{safe_title}</h2>
                   <div style="font-size:.95rem; color:#334155;">{safe_message}</div>
-                  <div style="margin-top:16px; padding:12px 14px; border-radius:16px; background:rgba(255,255,255,.72); color:#475569;">
-                    A megadott URL: <strong>{safe_url}</strong>
-                  </div>
-                  <div style="margin-top:12px;">
-                    <span class="pill">Stage–1 score: {escape(stage1_score_text)}</span>
-                    <span class="pill">Stage–1 jelzés: {safe_stage1_signal}</span>
+                  <div style="margin-top:16px; padding:12px 14px; border-radius:16px; background:rgba(255,255,255,.72); color:#475569;">A megadott URL: <strong>{safe_url}</strong></div>
+                  <div style="margin-top:12px; display:flex; flex-wrap:wrap; gap:.35rem;">
+                    <span class="pill" style="margin:0;">Stage–1 score: {escape(stage1_score_text)}</span>
+                    <span class="pill" style="margin:0;">Stage–1 jelzés: {safe_stage1_signal}</span>
                   </div>
                   {stage2_hint}
                 </div>
               </div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        """).strip()
+        st.markdown(warning_html, unsafe_allow_html=True)
 
     with st.expander("Projektinformáció"):
         c1, c2, c3 = st.columns(3)
@@ -829,12 +816,14 @@ if result:
             )
 
         st.markdown("### Pipeline jelek")
-        st.markdown(
-            f'<span class="pill">0. zóna: {escape(str(result["zone0_signal"]))}</span>'
-            f'<span class="pill">A zóna: {escape(str(result["a_zone_signal"]))}</span>'
-            f'<span class="pill">Stage–1: {safe_stage1_signal}</span>',
-            unsafe_allow_html=True,
-        )
+        pipeline_html = dedent(f"""
+            <div style="display:flex; flex-wrap:wrap; gap:.5rem;">
+              <span class="pill" style="margin:0;">0. zóna: {escape(str(result["zone0_signal"]))}</span>
+              <span class="pill" style="margin:0;">A zóna: {escape(str(result["a_zone_signal"]))}</span>
+              <span class="pill" style="margin:0;">Stage–1: {safe_stage1_signal}</span>
+            </div>
+        """).strip()
+        st.markdown(pipeline_html, unsafe_allow_html=True)
 
         webrisk_status = result.get("webrisk_status") or {}
         threats = webrisk_status.get("threats") or []
