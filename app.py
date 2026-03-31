@@ -745,31 +745,32 @@ if result:
     if result["final_severity"] == "green":
         open_button_html = ""
         if result.get("allow_open"):
-            open_button_html = dedent(f"""
-                <div style="margin-top:16px;">
-                  <a href="{safe_url}" target="_blank" rel="noopener noreferrer" style="display:inline-block; padding:.78rem 1.1rem; background:#e11d8d; color:white; text-decoration:none; border-radius:999px; font-weight:700;">Oldal megnyitása új lapon</a>
-                </div>
-            """).strip()
-        safe_html = dedent(f"""
-            <div class="frame">
-              <div class="safe-page">
-                <div class="safe-badge">Biztonságos oldal</div>
-                <div class="content-grid">
-                  <div class="info-card">
-                    <h2 class="user-title">{safe_title}</h2>
-                    <p class="user-sub">{safe_message}</p>
-                    <div class="pill">Stage–1 score: {escape(stage1_score_text)}</div>
-                    <div class="pill">Végső jelzés: {safe_final_signal}</div>
-                  </div>
-                  <div class="action-card">
-                    <div style="font-size:1.02rem; font-weight:700; color:#0f172a;">A böngészés folytatható</div>
-                    <div style="margin-top:10px; color:#475569;">A megadott cím: <strong>{safe_url}</strong></div>
-                    {open_button_html}
-                  </div>
-                </div>
-              </div>
-            </div>
-        """).strip()
+            open_button_html = (
+                f'<div style="margin-top:16px;">'
+                f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="display:inline-block; padding:.78rem 1.1rem; background:#e11d8d; color:white; text-decoration:none; border-radius:999px; font-weight:700;">'
+                f'Oldal megnyitása új lapon</a></div>'
+            )
+        safe_html = (
+            f'<div class="frame">'
+            f'<div class="safe-page">'
+            f'<div class="safe-badge">Biztonságos oldal</div>'
+            f'<div class="content-grid">'
+            f'<div class="info-card">'
+            f'<h2 class="user-title">{safe_title}</h2>'
+            f'<p class="user-sub">{safe_message}</p>'
+            f'<div class="pill">Stage–1 score: {escape(stage1_score_text)}</div>'
+            f'<div class="pill">Végső jelzés: {safe_final_signal}</div>'
+            f'</div>'
+            f'<div class="action-card">'
+            f'<div style="font-size:1.02rem; font-weight:700; color:#0f172a;">A böngészés folytatható</div>'
+            f'<div style="margin-top:10px; color:#475569;">A megadott cím: <strong>{safe_url}</strong></div>'
+            f'{open_button_html}'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
         st.markdown(safe_html, unsafe_allow_html=True)
     else:
         warning_class = "warning-review" if result["final_severity"] == "yellow" else "warning-block"
@@ -777,24 +778,23 @@ if result:
         stage2_hint = ""
         if result["final_signal"] == "PASS_TO_STAGE2":
             stage2_hint = '<div style="margin-top:14px; color:#475569; font-size:.94rem;">A Stage–2 szövegbányászati mélyelemzés indítása javasolt.</div>'
-
-        warning_html = dedent(f"""
-            <div class="frame">
-              <div class="warning-page {warning_class}">
-                <div class="warning-card">
-                  <div style="font-size:1.8rem; line-height:1;">{escape(str(result["state_icon"]))}</div>
-                  <h2 style="margin:10px 0 6px 0; color:{accent}; font-size:1.12rem;">{safe_title}</h2>
-                  <div style="font-size:.95rem; color:#334155;">{safe_message}</div>
-                  <div style="margin-top:16px; padding:12px 14px; border-radius:16px; background:rgba(255,255,255,.72); color:#475569;">A megadott URL: <strong>{safe_url}</strong></div>
-                  <div style="margin-top:12px; display:flex; flex-wrap:wrap; gap:.35rem;">
-                    <span class="pill" style="margin:0;">Stage–1 score: {escape(stage1_score_text)}</span>
-                    <span class="pill" style="margin:0;">Stage–1 jelzés: {safe_stage1_signal}</span>
-                  </div>
-                  {stage2_hint}
-                </div>
-              </div>
-            </div>
-        """).strip()
+        warning_html = (
+            f'<div class="frame">'
+            f'<div class="warning-page {warning_class}">'
+            f'<div class="warning-card">'
+            f'<div style="font-size:1.8rem; line-height:1;">{escape(str(result["state_icon"]))}</div>'
+            f'<h2 style="margin:10px 0 6px 0; color:{accent}; font-size:1.12rem;">{safe_title}</h2>'
+            f'<div style="font-size:.95rem; color:#334155;">{safe_message}</div>'
+            f'<div style="margin-top:16px; padding:12px 14px; border-radius:16px; background:rgba(255,255,255,.72); color:#475569;">A megadott URL: <strong>{safe_url}</strong></div>'
+            f'<div style="margin-top:12px; display:flex; flex-wrap:wrap; gap:.35rem;">'
+            f'<span class="pill" style="margin:0;">Stage–1 score: {escape(stage1_score_text)}</span>'
+            f'<span class="pill" style="margin:0;">Stage–1 jelzés: {safe_stage1_signal}</span>'
+            f'</div>'
+            f'{stage2_hint}'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
         st.markdown(warning_html, unsafe_allow_html=True)
 
     with st.expander("Projektinformáció"):
