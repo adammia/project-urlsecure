@@ -1,12 +1,12 @@
-
 from __future__ import annotations
 
 import json
 import os
 import re
+from html import escape
 from pathlib import Path
 from typing import Optional, Tuple
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
 
 import joblib
 import numpy as np
@@ -28,15 +28,28 @@ API_KEY = os.getenv("GOOGLE_CLOUD_API_KEY", "").strip()
 WEBRISK_ENDPOINT = "https://webrisk.googleapis.com/v1/uris:search"
 DEFAULT_THREAT_TYPES = ["SOCIAL_ENGINEERING", "MALWARE", "UNWANTED_SOFTWARE"]
 
-BYPASS_WHITELIST_FOR_TEST = True
+BYPASS_WHITELIST_FOR_TEST = False
+WEBRISK_TEST_MODE = False
+WEBRISK_POSITIVE_TEST_URLS = {"https://webrisk-test.local", "http://webrisk-test.local"}
+SHOW_DEBUG_JSON = True
 
 SHARED_HOSTING_SUFFIXES = {
     "appspot.com", "github.io", "pages.dev", "vercel.app", "netlify.app",
-    "cloudfront.net", "firebaseapp.com", "web.app", "herokuapp.com", "azurewebsites.net"
+    "cloudfront.net", "firebaseapp.com", "web.app", "herokuapp.com", "azurewebsites.net",
 }
 DOMAIN_PATTERN = re.compile(r"^[a-z0-9._-]+$")
+HOSTNAME_PATTERN = re.compile(
+    r"^(?=.{1,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$",
+    re.IGNORECASE,
+)
+IPV4_PATTERN = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
 
-st.set_page_config(page_title="BankSecure – integrált Stage–1", page_icon="🛡️", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(
+    page_title="BankSecure – integrált Stage–1",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 def ensure_scheme(url: str) -> str:
     url = str(url).strip()
@@ -46,12 +59,40 @@ def ensure_scheme(url: str) -> str:
         return "http://" + url
     return url
 
+def is_valid_hostname(hostname: str) -> bool:
+    host = (hostname or "").strip().lower().rstrip(".")
+    if not host:
+        return False
+    if " " in host or "?" in host or "/" in host or "_" in host:
+        return False
+    if host == "localhost":
+        return True
+    if IPV4_PATTERN.fullmatch(host):
+        parts = host.split(".")
+        return all(0 <= int(part) <= 255 for part in parts)
+    if "." not in host:
+        return False
+    labels = host.split(".")
+    if any(not label for label in labels):
+        return False
+    if len(labels[-1]) < 2:
+        return False
+    return bool(HOSTNAME_PATTERN.fullmatch(host))
+
 def extract_hostname(url: str) -> str:
     parsed = urlparse(ensure_scheme(url))
     hostname = (parsed.hostname or "").strip().lower().rstrip(".")
-    if not hostname:
-        raise ValueError(f"Nem sikerült hostnevet kinyerni: {url}")
+    if not hostname or not is_valid_hostname(hostname):
+        raise ValueError(f"Nem sikerült érvényes hostnevet kinyerni: {url}")
     return hostname
+
+def validate_url_input(url: str) -> str:
+    normalized = ensure_scheme(url)
+    parsed = urlparse(normalized)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Csak http vagy https URL adható meg.")
+    _ = extract_hostname(normalized)
+    return normalized
 
 def registrable_domain(hostname: str) -> str:
     extracted = tldextract.extract(hostname)
@@ -93,6 +134,10 @@ def build_bloom_from_csv(path_str: str):
 def zone0_check(url: str, bloom_filter) -> Tuple[str, str, str]:
     hostname = extract_hostname(url)
     base_domain = registrable_domain(hostname)
+
+    if BYPASS_WHITELIST_FOR_TEST:
+        return "MISS", hostname, base_domain
+
     if is_shared_hosting_domain(base_domain):
         hit = hostname in bloom_filter
     else:
@@ -101,7 +146,12 @@ def zone0_check(url: str, bloom_filter) -> Tuple[str, str, str]:
 
 def check_webrisk_service(api_key: str) -> dict:
     if not api_key:
-        return {"enabled": False, "ok": False, "status_code": None, "detail": "Nincs megadva API kulcs."}
+        return {
+            "enabled": False,
+            "ok": False,
+            "status_code": None,
+            "detail": "Nincs megadva API kulcs.",
+        }
     try:
         resp = requests.get(
             WEBRISK_ENDPOINT,
@@ -119,9 +169,31 @@ class WebRiskLookupClient:
     def __init__(self, api_key: str):
         self.api_key = (api_key or "").strip()
 
+    @staticmethod
+    def _normalize_test_url(url: str) -> str:
+        return ensure_scheme(url).strip().lower().rstrip("/")
+
     def lookup_url(self, url: str):
+        normalized_url = self._normalize_test_url(url)
+
+        if WEBRISK_TEST_MODE and normalized_url in {
+            self._normalize_test_url(u) for u in WEBRISK_POSITIVE_TEST_URLS
+        }:
+            return {
+                "signal": "BLOCK_WEBRISK",
+                "threats": ["SOCIAL_ENGINEERING"],
+                "error": None,
+                "status_code": 200,
+                "detail": "Mockolt pozitív Web Risk találat teszt célra.",
+            }
+
         if not self.api_key:
-            return {"signal": "PASS_TO_STAGE1", "threats": [], "error": "NO_API_KEY", "status_code": None}
+            return {
+                "signal": "PASS_TO_STAGE1",
+                "threats": [],
+                "error": "NO_API_KEY",
+                "status_code": None,
+            }
 
         params = [("uri", ensure_scheme(url))]
         for threat in DEFAULT_THREAT_TYPES:
@@ -138,20 +210,37 @@ class WebRiskLookupClient:
             if response.status_code == 200:
                 threats = payload.get("threat", {}).get("threatTypes", [])
                 if threats:
-                    return {"signal": "BLOCK_WEBRISK", "threats": threats, "error": None, "status_code": 200}
-                return {"signal": "PASS_TO_STAGE1", "threats": [], "error": None, "status_code": 200}
-            return {"signal": "WEBRISK_ERROR", "threats": [], "error": payload if payload else response.text, "status_code": response.status_code}
+                    return {
+                        "signal": "BLOCK_WEBRISK",
+                        "threats": threats,
+                        "error": None,
+                        "status_code": 200,
+                    }
+                return {
+                    "signal": "PASS_TO_STAGE1",
+                    "threats": [],
+                    "error": None,
+                    "status_code": 200,
+                }
+            return {
+                "signal": "WEBRISK_ERROR",
+                "threats": [],
+                "error": payload if payload else response.text,
+                "status_code": response.status_code,
+            }
         except Exception as exc:
-            return {"signal": "WEBRISK_ERROR", "threats": [], "error": str(exc), "status_code": None}
+            return {
+                "signal": "WEBRISK_ERROR",
+                "threats": [],
+                "error": str(exc),
+                "status_code": None,
+            }
 
 @st.cache_resource(show_spinner=False)
 def load_stage1():
     model = joblib.load(MODEL_PATH)
     meta = json.loads(META_PATH.read_text(encoding="utf-8"))
     return model, meta
-
-def count_chars(s: str, chars: str) -> int:
-    return sum(s.count(ch) for ch in chars)
 
 def is_ip_host(host: str) -> int:
     m = re.fullmatch(r"(\d{1,3}\.){3}\d{1,3}", host)
@@ -162,19 +251,12 @@ def shortener_flag(host: str) -> int:
     return int(any(host.endswith(s) or host == s for s in shorteners))
 
 def compute_stage1_features(url: str, feature_cols: list[str]) -> pd.DataFrame:
-    """
-    A Stage–1 feature-képzését a tanítóbázis kódolásával összhangban állítja elő.
-    Itt nem imputálás történik, hanem ugyanannak a szemantikának a megőrzése:
-    ha nincs directory / file / query rész az URL-ben, akkor az ezekhez tartozó
-    feature-ök -1 értéket kapnak, mert a modell ezt a jelölést tanulta.
-    """
     parsed = urlparse(ensure_scheme(url))
     full = ensure_scheme(url)
     host = (parsed.hostname or "").lower()
     path = parsed.path or ""
     query = parsed.query or ""
 
-    # A tanítóhalmaz logikája alapján a hiányzó path-részeket -1-gyel kell jelölni.
     if path and path != "/":
         if "/" in path:
             directory = path.rsplit("/", 1)[0]
@@ -199,12 +281,10 @@ def compute_stage1_features(url: str, feature_cols: list[str]) -> pd.DataFrame:
         "dot": ".", "hyphen": "-", "underline": "_", "slash": "/", "questionmark": "?",
         "equal": "=", "at": "@", "and": "&", "exclamation": "!", "space": " ",
         "tilde": "~", "comma": ",", "plus": "+", "asterisk": "*", "hashtag": "#",
-        "dollar": "$", "percent": "%"
+        "dollar": "$", "percent": "%",
     }
 
     vals = {}
-
-    # URL- és domain-feature-ök mindig értelmezhetők
     for name, ch in punct.items():
         vals[f"qty_{name}_url"] = full.count(ch)
         vals[f"qty_{name}_domain"] = host.count(ch)
@@ -216,7 +296,6 @@ def compute_stage1_features(url: str, feature_cols: list[str]) -> pd.DataFrame:
     vals["email_in_url"] = int("@" in full)
     vals["url_shortened"] = shortener_flag(host)
 
-    # Directory-feature-ök
     if directory is None:
         for name in punct:
             vals[f"qty_{name}_directory"] = -1
@@ -226,7 +305,6 @@ def compute_stage1_features(url: str, feature_cols: list[str]) -> pd.DataFrame:
             vals[f"qty_{name}_directory"] = directory.count(ch)
         vals["directory_length"] = len(directory)
 
-    # File-feature-ök
     if file_part is None:
         for name in punct:
             vals[f"qty_{name}_file"] = -1
@@ -236,7 +314,6 @@ def compute_stage1_features(url: str, feature_cols: list[str]) -> pd.DataFrame:
             vals[f"qty_{name}_file"] = file_part.count(ch)
         vals["file_length"] = len(file_part)
 
-    # Paraméter-feature-ök
     if not query:
         for name in punct:
             vals[f"qty_{name}_params"] = -1
@@ -260,14 +337,45 @@ def stage1_signal_from_score(score: float, low: float, high: float) -> str:
 
 def feature_explanation(model, feature_df, feature_cols, top_n=5):
     estimator = model.named_steps["model"]
-    if hasattr(estimator, "feature_importances_"):
-        vals = np.abs(np.array(estimator.feature_importances_).reshape(-1))
-    elif hasattr(estimator, "coef_"):
-        vals = np.abs(np.array(estimator.coef_).reshape(-1))
-    else:
-        vals = np.zeros(len(feature_cols))
-    pairs = sorted(zip(feature_cols, vals), key=lambda x: x[1], reverse=True)[:top_n]
-    return [{"feature": k, "impact": float(v)} for k, v in pairs]
+    row = feature_df.iloc[0].reindex(feature_cols).fillna(0.0).astype(float).to_numpy()
+
+    try:
+        if hasattr(estimator, "coef_"):
+            coef = np.array(estimator.coef_).reshape(-1)
+            vals = np.abs(row * coef)
+            pairs = sorted(zip(feature_cols, vals), key=lambda x: x[1], reverse=True)[:top_n]
+            return [{"feature": k, "impact": float(v)} for k, v in pairs if v > 0]
+
+        if hasattr(estimator, "feature_importances_"):
+            importances = np.array(estimator.feature_importances_).reshape(-1)
+            vals = np.abs(row) * np.abs(importances)
+            pairs = sorted(zip(feature_cols, vals), key=lambda x: x[1], reverse=True)[:top_n]
+            return [{"feature": k, "impact": float(v)} for k, v in pairs if v > 0]
+    except Exception:
+        pass
+
+    return []
+
+def invalid_result(url: str, error_message: str) -> dict:
+    safe_url = (str(url) or "").strip()
+    return {
+        "url": safe_url,
+        "hostname": "N/A",
+        "registrable_domain": "N/A",
+        "zone0_signal": "INVALID_INPUT",
+        "a_zone_signal": "SKIPPED",
+        "stage1_score": None,
+        "stage1_signal": "SKIPPED",
+        "top_feature_explanation": [],
+        "final_signal": "INVALID_URL",
+        "final_severity": "red",
+        "user_title": "A megadott URL formátuma hibás vagy nem feldolgozható.",
+        "user_message": f"{error_message} Kérlek, teljes, érvényes URL-t adj meg, például: https://example.com",
+        "state_icon": "⚠️",
+        "webrisk_status": None,
+        "allow_open": False,
+        "debug_note": "Az input validáció elutasította az URL-t.",
+    }
 
 def evaluate_url(url: str, bloom_filter):
     model, meta = load_stage1()
@@ -275,8 +383,11 @@ def evaluate_url(url: str, bloom_filter):
     high = meta["high_risk_threshold"]
     feature_cols = meta["feature_columns"]
 
-    url = ensure_scheme(url)
-    zone0_signal, hostname, base_domain = zone0_check(url, bloom_filter)
+    try:
+        url = validate_url_input(url)
+        zone0_signal, hostname, base_domain = zone0_check(url, bloom_filter)
+    except ValueError as exc:
+        return invalid_result(url, str(exc))
 
     if zone0_signal == "ALLOW_WHITE_LIST":
         return {
@@ -285,7 +396,7 @@ def evaluate_url(url: str, bloom_filter):
             "registrable_domain": base_domain,
             "zone0_signal": zone0_signal,
             "a_zone_signal": "SKIPPED",
-            "stage1_score": 0.0,
+            "stage1_score": None,
             "stage1_signal": "SKIPPED",
             "top_feature_explanation": [],
             "final_signal": "ALLOW",
@@ -294,6 +405,7 @@ def evaluate_url(url: str, bloom_filter):
             "user_message": "A domain szerepel a whitelistben.",
             "state_icon": "✅",
             "webrisk_status": None,
+            "allow_open": True,
         }
 
     web = WebRiskLookupClient(API_KEY).lookup_url(url)
@@ -313,10 +425,35 @@ def evaluate_url(url: str, bloom_filter):
             "user_message": "A Web Risk ismert fenyegetést jelzett.",
             "state_icon": "⛔",
             "webrisk_status": web,
+            "allow_open": False,
         }
 
     feature_df = compute_stage1_features(url, feature_cols)
-    score = float(model.predict_proba(feature_df)[0, 1])
+
+    try:
+        score = float(model.predict_proba(feature_df)[0, 1])
+    except Exception as exc:
+        return {
+            "url": url,
+            "hostname": hostname,
+            "registrable_domain": base_domain,
+            "zone0_signal": zone0_signal,
+            "a_zone_signal": web["signal"],
+            "stage1_score": None,
+            "stage1_signal": "ERROR_STAGE1",
+            "top_feature_explanation": [],
+            "final_signal": "REVIEW",
+            "final_severity": "red",
+            "user_title": "A Stage–1 modell futása közben hiba történt.",
+            "user_message": "A böngészés automatikus engedélyezése nem történt meg. Manuális ellenőrzés szükséges.",
+            "state_icon": "⚠️",
+            "webrisk_status": {
+                **web,
+                "model_error": str(exc),
+            },
+            "allow_open": False,
+        }
+
     signal = stage1_signal_from_score(score, low, high)
     explanation = feature_explanation(model, feature_df, feature_cols, top_n=5)
 
@@ -326,18 +463,21 @@ def evaluate_url(url: str, bloom_filter):
         title = "Az URL Stage–1 alapján alacsony kockázatú."
         message = "A gyors URL-alapú modell szerint az oldal átengedhető."
         icon = "✅"
+        allow_open = True
     elif signal == "REVIEW_STAGE1_HIGH_RISK":
         final_signal = "REVIEW"
         severity = "red"
         title = "Az URL Stage–1 alapján magas kockázatú."
         message = "A gyors URL-alapú modell alapján további blokkolás vagy manuális review indokolt."
         icon = "⛔"
+        allow_open = False
     else:
         final_signal = "PASS_TO_STAGE2"
         severity = "yellow"
         title = "Az URL további vizsgálatot igényel."
         message = "A köztes kockázati pontszám miatt az URL az Enriched / Stage–2 réteg felé továbbítható."
         icon = "⚠️"
+        allow_open = False
 
     return {
         "url": url,
@@ -354,8 +494,8 @@ def evaluate_url(url: str, bloom_filter):
         "user_message": message,
         "state_icon": icon,
         "webrisk_status": web,
+        "allow_open": allow_open,
     }
-
 
 st.markdown("""
 <style>
@@ -567,7 +707,7 @@ st.markdown(f"""
   <div class="browser-dot" style="background:#f59e0b;"></div>
   <div class="browser-dot" style="background:#22c55e;"></div>
   <div style="color:#64748b; font-size:0.95rem; flex:1;">Kérjük, adja meg az URL-t</div>
-  <div class="browser-icon">{current_icon}</div>
+  <div class="browser-icon">{escape(current_icon)}</div>
   <div class="browser-icon">⟳</div>
   <div class="browser-icon">✕</div>
 </div>
@@ -589,11 +729,34 @@ result = st.session_state.get("last_result")
 if result:
     stage1_score_text = (
         f'{result["stage1_score"]:.4f}'
-        if isinstance(result.get("stage1_score"), (int, float))
-        else "n/a"
+        if isinstance(result.get("stage1_score"), (int, float)) and result.get("stage1_signal") not in {"SKIPPED", "SKIPPED_BLOCKED_EARLY"}
+        else "N/A"
     )
 
+    safe_url = escape(str(result.get("url", "")))
+    safe_title = escape(str(result.get("user_title", "")))
+    safe_message = escape(str(result.get("user_message", "")))
+    safe_final_signal = escape(str(result.get("final_signal", "")))
+    safe_stage1_signal = escape(str(result.get("stage1_signal", "")))
+    safe_hostname = escape(str(result.get("hostname", "N/A")))
+    safe_domain = escape(str(result.get("registrable_domain", "N/A")))
+
     if result["final_severity"] == "green":
+        open_button_html = ""
+        if result.get("allow_open"):
+            open_button_html = f"""
+            <div style="margin-top:16px;">
+              <a href="{safe_url}" target="_blank" rel="noopener noreferrer" style="
+                  display:inline-block;
+                  padding:.78rem 1.1rem;
+                  background:#e11d8d;
+                  color:white;
+                  text-decoration:none;
+                  border-radius:999px;
+                  font-weight:700;
+              ">Oldal megnyitása új lapon</a>
+            </div>
+            """
         st.markdown(
             f"""
             <div class="frame">
@@ -601,31 +764,21 @@ if result:
                 <div class="safe-badge">Biztonságos oldal</div>
                 <div class="content-grid">
                   <div class="info-card">
-                    <h2 class="user-title">{result["user_title"]}</h2>
-                    <p class="user-sub">{result["user_message"]}</p>
-                    <div class="pill">Stage–1 score: {stage1_score_text}</div>
-                    <div class="pill">Végső jelzés: {result["final_signal"]}</div>
+                    <h2 class="user-title">{safe_title}</h2>
+                    <p class="user-sub">{safe_message}</p>
+                    <div class="pill">Stage–1 score: {escape(stage1_score_text)}</div>
+                    <div class="pill">Végső jelzés: {safe_final_signal}</div>
                   </div>
                   <div class="action-card">
                     <div style="font-size:1.02rem; font-weight:700; color:#0f172a;">A böngészés folytatható</div>
-                    <div style="margin-top:10px; color:#475569;">A megadott cím: <strong>{result["url"]}</strong></div>
-                    <div style="margin-top:16px;">
-                      <a href="{result["url"]}" target="_blank" style="
-                          display:inline-block;
-                          padding:.78rem 1.1rem;
-                          background:#e11d8d;
-                          color:white;
-                          text-decoration:none;
-                          border-radius:999px;
-                          font-weight:700;
-                      ">Oldal megnyitása új lapon</a>
-                    </div>
+                    <div style="margin-top:10px; color:#475569;">A megadott cím: <strong>{safe_url}</strong></div>
+                    {open_button_html}
                   </div>
                 </div>
               </div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
     else:
         warning_class = "warning-review" if result["final_severity"] == "yellow" else "warning-block"
@@ -633,50 +786,60 @@ if result:
         stage2_hint = ""
         if result["final_signal"] == "PASS_TO_STAGE2":
             stage2_hint = '<div style="margin-top:14px; color:#475569; font-size:.94rem;">A Stage–2 szövegbányászati mélyelemzés indítása javasolt.</div>'
+
         st.markdown(
             f"""
             <div class="frame">
               <div class="warning-page {warning_class}">
                 <div class="warning-card">
-                  <div style="font-size:1.8rem; line-height:1;">{result["state_icon"]}</div>
-                  <h2 style="margin:10px 0 6px 0; color:{accent}; font-size:1.12rem;">{result["user_title"]}</h2>
-                  <div style="font-size:.95rem; color:#334155;">{result["user_message"]}</div>
+                  <div style="font-size:1.8rem; line-height:1;">{escape(str(result["state_icon"]))}</div>
+                  <h2 style="margin:10px 0 6px 0; color:{accent}; font-size:1.12rem;">{safe_title}</h2>
+                  <div style="font-size:.95rem; color:#334155;">{safe_message}</div>
                   <div style="margin-top:16px; padding:12px 14px; border-radius:16px; background:rgba(255,255,255,.72); color:#475569;">
-                    A megadott URL: <strong>{result["url"]}</strong>
+                    A megadott URL: <strong>{safe_url}</strong>
                   </div>
                   <div style="margin-top:12px;">
-                    <span class="pill">Stage–1 score: {stage1_score_text}</span>
-                    <span class="pill">Stage–1 jelzés: {result["stage1_signal"]}</span>
+                    <span class="pill">Stage–1 score: {escape(stage1_score_text)}</span>
+                    <span class="pill">Stage–1 jelzés: {safe_stage1_signal}</span>
                   </div>
                   {stage2_hint}
                 </div>
               </div>
             </div>
             """,
-            unsafe_allow_html=True
+            unsafe_allow_html=True,
         )
 
     with st.expander("Projektinformáció"):
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(f'<div class="meta-card"><div style="color:#64748b;font-size:13px;">Host</div><div><strong>{result["hostname"]}</strong></div></div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="meta-card"><div style="color:#64748b;font-size:13px;">Host</div><div><strong>{safe_hostname}</strong></div></div>',
+                unsafe_allow_html=True,
+            )
         with c2:
-            st.markdown(f'<div class="meta-card"><div style="color:#64748b;font-size:13px;">Domain</div><div><strong>{result["registrable_domain"]}</strong></div></div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="meta-card"><div style="color:#64748b;font-size:13px;">Domain</div><div><strong>{safe_domain}</strong></div></div>',
+                unsafe_allow_html=True,
+            )
         with c3:
-            st.markdown(f'<div class="meta-card"><div style="color:#64748b;font-size:13px;">Jelzés</div><div><strong>{result["final_signal"]}</strong></div></div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="meta-card"><div style="color:#64748b;font-size:13px;">Jelzés</div><div><strong>{safe_final_signal}</strong></div></div>',
+                unsafe_allow_html=True,
+            )
 
         st.markdown("### Pipeline jelek")
         st.markdown(
-            f'<span class="pill">0. zóna: {result["zone0_signal"]}</span>'
-            f'<span class="pill">A zóna: {result["a_zone_signal"]}</span>'
-            f'<span class="pill">Stage–1: {result["stage1_signal"]}</span>',
-            unsafe_allow_html=True
+            f'<span class="pill">0. zóna: {escape(str(result["zone0_signal"]))}</span>'
+            f'<span class="pill">A zóna: {escape(str(result["a_zone_signal"]))}</span>'
+            f'<span class="pill">Stage–1: {safe_stage1_signal}</span>',
+            unsafe_allow_html=True,
         )
 
         webrisk_status = result.get("webrisk_status") or {}
-
-        if webrisk_status.get("threat_types"):
-            st.error("Web Risk threat típusok: " + ", ".join(webrisk_status["threat_types"]))
+        threats = webrisk_status.get("threats") or []
+        if threats:
+            st.error("Web Risk threat típusok: " + ", ".join(map(str, threats)))
         if webrisk_status.get("error"):
             st.caption("Web Risk hiba: " + str(webrisk_status["error"]))
 
@@ -688,8 +851,9 @@ if result:
         else:
             st.caption("Nincs elérhető feature magyarázat ehhez a döntéshez.")
 
-        st.markdown("### Technikai állapot")
-        st.json({
-            "webrisk_service_check": webrisk_check,
-            "pipeline_result": result
-        })
+        if SHOW_DEBUG_JSON:
+            st.markdown("### Technikai állapot")
+            st.json({
+                "webrisk_service_check": webrisk_check,
+                "pipeline_result": result,
+            })
